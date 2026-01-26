@@ -10,6 +10,7 @@ use embassy_rp::block::ImageDef;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals;
+use embassy_rp::flash;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::pio::Pio;
 use embassy_rp::pio_programs::ws2812::{Grb, PioWs2812, PioWs2812Program};
@@ -27,7 +28,7 @@ use light_machine::Word;
 use fluxpilot_firmware::program::default_program;
 use fluxpilot_firmware::usb_io::{io_loop, PliotShared};
 use fluxpilot_firmware::usb_vendor::{VendorClass, VendorReceiver, VendorSender};
-use pliot::meme_storage::MemStorage;
+use fluxpilot_firmware::flash_storage::FlashStorage;
 use pliot::Pliot;
 
 
@@ -68,8 +69,10 @@ const FRAME_TARGET_MS: u64 = 16;
 const PROGRAM_BUFFER_SIZE: usize = 1024;
 const USB_RECEIVE_BUF_SIZE: usize = 256;
 const STACK_SIZE: usize = 100;
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-type StorageImpl = MemStorage<'static>;
+type FlashDriver = flash::Flash<'static, peripherals::FLASH, flash::Blocking, FLASH_SIZE>;
+type StorageImpl = FlashStorage<FlashDriver>;
 type SharedState = PliotShared<
     'static,
     'static,
@@ -82,7 +85,7 @@ type SharedState = PliotShared<
 
 static PROGRAM_BUFFER: StaticCell<[u16; PROGRAM_BUFFER_SIZE]> = StaticCell::new();
 static GLOBALS: StaticCell<[u16; 10]> = StaticCell::new();
-static MEM_STORAGE: StaticCell<MemStorage<'static>> = StaticCell::new();
+static FLASH_STORAGE: StaticCell<FlashStorage<FlashDriver>> = StaticCell::new();
 static USB_RECEIVE_BUF: StaticCell<[u8; USB_RECEIVE_BUF_SIZE]> = StaticCell::new();
 static RAW_MESSAGE_BUFF: StaticCell<Vec<u8, INCOMING_MESSAGE_CAP>> = StaticCell::new();
 static USB_CONFIG_DESCRIPTOR: StaticCell<[u8; 64]> = StaticCell::new();
@@ -147,11 +150,49 @@ async fn main(spawner: Spawner) -> ! {
 
     let globals = GLOBALS.init([0u16; 10]);
     let storage = {
-        let program_buffer = PROGRAM_BUFFER.init([0u16; PROGRAM_BUFFER_SIZE]);
-        if default_program(program_buffer).is_err() {
-            panic!("default program build failed");
+        use pliot::StorageError;
+
+        let flash = FlashDriver::new_blocking(p.FLASH);
+        let flash_base = flash::FLASH_BASE as usize;
+        let mut storage = match FlashStorage::new(flash, flash_base) {
+            Ok(storage) => storage,
+            Err(_) => {
+                panic!("flash storage init failed");
+            }
+        };
+        match storage.load_header() {
+            Ok(()) => {}
+            Err(StorageError::InvalidHeader) => {
+                if storage.probe_write_read().is_err() {
+                    panic!("flash storage probe failed");
+                }
+                if storage.format().is_err() {
+                    panic!("flash storage format failed");
+                }
+                if storage.load_header().is_err() {
+                    panic!("flash storage header reload failed");
+                }
+            }
+            Err(_) => {
+                panic!("flash storage header load failed");
+            }
         }
-        MEM_STORAGE.init(MemStorage::new(program_buffer.as_mut_slice()))
+        if storage.is_empty() {
+            let program_buffer = PROGRAM_BUFFER.init([0u16; PROGRAM_BUFFER_SIZE]);
+            let program_len = match default_program(program_buffer) {
+                Ok(length) => length,
+                Err(_) => {
+                    panic!("default program build failed");
+                }
+            };
+            let Some(program) = program_buffer.get(..program_len) else {
+                panic!("default program bounds invalid");
+            };
+            if storage.write_program(program).is_err() {
+                panic!("default program flash write failed");
+            }
+        }
+        FLASH_STORAGE.init(storage)
     };
 
     let shared = PLIOT_SHARED.init(Mutex::new(PliotShared {

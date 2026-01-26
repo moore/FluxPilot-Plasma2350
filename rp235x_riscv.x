@@ -47,6 +47,11 @@ PROVIDE(_max_hart_id = 0);
 PROVIDE(_hart_stack_size = 2K);
 PROVIDE(_heap_size = 0);
 
+/* Reserve the tail of FLASH for flash-backed storage. */
+__storage_size = 64K;
+__storage_start = ORIGIN(FLASH) + LENGTH(FLASH) - __storage_size;
+__storage_end = ORIGIN(FLASH) + LENGTH(FLASH);
+
 PROVIDE(InstructionMisaligned = ExceptionHandler);
 PROVIDE(InstructionFault = ExceptionHandler);
 PROVIDE(IllegalInstruction = ExceptionHandler);
@@ -178,6 +183,12 @@ SECTIONS
       KEEP(*(.end_block));
   } > FLASH
 
+  .storage (NOLOAD) :
+  {
+    . = __storage_start;
+    . += __storage_size;
+  } > FLASH
+
   /* fictitious region that represents the memory available for the heap */
   .heap (NOLOAD) :
   {
@@ -234,7 +245,7 @@ BUG(riscv-rt): .bss is not 32-byte aligned");
 ASSERT(_sheap % 4 == 0, "
 BUG(riscv-rt): start of .heap is not 4-byte aligned");
 
-ASSERT(_stext + SIZEOF(.text) < ORIGIN(FLASH) + LENGTH(FLASH), "
+ASSERT(_stext + SIZEOF(.text) < ORIGIN(FLASH) + LENGTH(FLASH) - __storage_size, "
 ERROR(riscv-rt): The .text section must be placed inside the FLASH region.
 Set _stext to an address smaller than 'ORIGIN(FLASH) + LENGTH(FLASH)'");
 
@@ -250,4 +261,3 @@ then modify your build script to compile the C code _without_ the
 details.");
 
 /* Do not exceed this mark in the error messages above                                    | */
-

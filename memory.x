@@ -71,7 +71,19 @@ SECTIONS {
 
 } INSERT AFTER .uninit;
 
+SECTIONS {
+    /* Reserve the tail of FLASH for flash-backed storage. */
+    __storage_size = 64K;
+    __storage_start = ORIGIN(FLASH) + LENGTH(FLASH) - __storage_size;
+    __storage_end = ORIGIN(FLASH) + LENGTH(FLASH);
+
+    .storage (NOLOAD) :
+    {
+        . = __storage_start;
+        . += __storage_size;
+    } > FLASH
+} INSERT AFTER .end_block;
+
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
-
 
