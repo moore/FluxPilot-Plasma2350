@@ -32,6 +32,12 @@ use fluxpilot_firmware::usb_vendor::{VendorClass, VendorReceiver, VendorSender};
 use fluxpilot_firmware::flash_storage::FlashStorage;
 use pliot::Pliot;
 
+mod build_constants {
+    include!(concat!(env!("OUT_DIR"), "/memory_consts.rs"));
+}
+
+use build_constants::FLASH_SIZE;
+
 
 // Panic handler
 use panic_probe as _;
@@ -42,18 +48,6 @@ use defmt_rtt as _;
 #[unsafe(link_section = ".start_block")]
 #[used]
 pub static IMAGE_DEF: ImageDef = hal::block::ImageDef::secure_exe();
-
-/* 
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    let p = embassy_rp::init(Default::default());
-
-    loop{
-        Timer::after_millis(100).await;
-    }   
-}
-*/
-
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<peripherals::USB>;
@@ -68,12 +62,12 @@ const OUTGOING_MESSAGE_CAP: usize = 128;
 const NUM_LEDS: usize = 1024;
 const FRAME_TARGET_MS: u64 = 16;
 const PROGRAM_BUFFER_SIZE: usize = 1024;
-const USB_RECEIVE_BUF_SIZE: usize = 256;
+const USB_RECEIVE_BUF_SIZE: usize = 2048;
 const STACK_SIZE: usize = 100;
-const FLASH_SIZE: usize = 2 * 1024 * 1024;
 const WATCHDOG_RESET_THRESHOLD: u32 = 3;
 const WATCHDOG_PERIOD_MS: u64 = 2_000;
 const WATCHDOG_FEED_MS: u64 = 500;
+const GLOBALS_SIZE: usize = 256;
 const WATCHDOG_SCRATCH_MAGIC: u32 = u32::from_le_bytes(*b"WDT0");
 
 type FlashDriver = flash::Flash<'static, peripherals::FLASH, flash::Blocking, FLASH_SIZE>;
@@ -89,7 +83,7 @@ type SharedState = PliotShared<
 >;
 
 static PROGRAM_BUFFER: StaticCell<[u16; PROGRAM_BUFFER_SIZE]> = StaticCell::new();
-static GLOBALS: StaticCell<[u16; 10]> = StaticCell::new();
+static GLOBALS: StaticCell<[u16; GLOBALS_SIZE]> = StaticCell::new();
 static FLASH_STORAGE: StaticCell<FlashStorage<FlashDriver>> = StaticCell::new();
 static USB_RECEIVE_BUF: StaticCell<[u8; USB_RECEIVE_BUF_SIZE]> = StaticCell::new();
 static RAW_MESSAGE_BUFF: StaticCell<Vec<u8, INCOMING_MESSAGE_CAP>> = StaticCell::new();
@@ -171,7 +165,7 @@ async fn main(spawner: Spawner) -> ! {
     let class = VendorClass::new(&mut builder, 64);
     let usb = builder.build();
 
-    let globals = GLOBALS.init([0u16; 10]);
+    let globals = GLOBALS.init([0u16; GLOBALS_SIZE]);
     let program_buffer = PROGRAM_BUFFER.init([0u16; PROGRAM_BUFFER_SIZE]);
     let storage = {
         use pliot::StorageError;
@@ -231,7 +225,7 @@ async fn main(spawner: Spawner) -> ! {
     let _ = spawner.spawn(io_task(usb_receiver, usb_sender, shared));
     let _ = spawner.spawn(heartbeat_task(onboard_blue));
     let _ = spawner.spawn(watchdog_task(watchdog));
-   
+
     led_loop_pio::<
         _,
         _,
@@ -253,17 +247,25 @@ async fn boot_led_smoke<P, const SM: usize, const NUM_LEDS: usize>(
     P: embassy_rp::pio::Instance,
 {
     data.fill(RGB8::default());
-    if let Some(first) = data.first_mut() {
-        *first = (16, 0, 0).into();
+    set_debug_led(writer, data, 0, (16, 0, 0)).await;
+    Timer::after_millis(150).await;
+
+}
+
+async fn set_debug_led<P, const SM: usize, const NUM_LEDS: usize>(
+    writer: &mut PioWs2812<'static, P, SM, NUM_LEDS, Grb>,
+    data: &mut [RGB8; NUM_LEDS],
+    index: usize,
+    rgb: (u8, u8, u8)
+) where
+    P: embassy_rp::pio::Instance,
+{
+    if let Some(led) = data.get_mut(index) {
+        *led = rgb.into()
     }
     writer.write(data).await;
     Timer::after_millis(150).await;
-
-    data.fill(RGB8::default());
-    writer.write(data).await;
-    Timer::after_millis(50).await;
 }
-
 #[embassy_executor::task]
 async fn usb_device_task(
     mut usb: embassy_usb::UsbDevice<'static, usb::Driver<'static, peripherals::USB>>,
