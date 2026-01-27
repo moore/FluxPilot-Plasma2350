@@ -15,6 +15,7 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::pio::Pio;
 use embassy_rp::pio_programs::ws2812::{Grb, PioWs2812, PioWs2812Program};
 use embassy_rp::usb;
+use embassy_rp::watchdog::{ResetReason, Watchdog};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
@@ -70,6 +71,10 @@ const PROGRAM_BUFFER_SIZE: usize = 1024;
 const USB_RECEIVE_BUF_SIZE: usize = 256;
 const STACK_SIZE: usize = 100;
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
+const WATCHDOG_RESET_THRESHOLD: u32 = 3;
+const WATCHDOG_PERIOD_MS: u64 = 2_000;
+const WATCHDOG_FEED_MS: u64 = 500;
+const WATCHDOG_SCRATCH_MAGIC: u32 = u32::from_le_bytes(*b"WDT0");
 
 type FlashDriver = flash::Flash<'static, peripherals::FLASH, flash::Blocking, FLASH_SIZE>;
 type StorageImpl = FlashStorage<FlashDriver>;
@@ -98,6 +103,24 @@ static USB_CONNECTED: AtomicBool = AtomicBool::new(false);
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
     let p = embassy_rp::init(Default::default());
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let reset_reason = watchdog.reset_reason();
+    let mut reset_count = if watchdog.get_scratch(1) == WATCHDOG_SCRATCH_MAGIC {
+        watchdog.get_scratch(0)
+    } else {
+        0
+    };
+    if reset_reason == Some(ResetReason::TimedOut) {
+        reset_count = reset_count.saturating_add(1);
+    } else {
+        reset_count = 0;
+    }
+    watchdog.set_scratch(1, WATCHDOG_SCRATCH_MAGIC);
+    watchdog.set_scratch(0, reset_count);
+    let clear_program = reset_count >= WATCHDOG_RESET_THRESHOLD;
+    if clear_program {
+        watchdog.set_scratch(0, 0);
+    }
 
     let mut pio = Pio::new(p.PIO0, Irqs);
     let program = PioWs2812Program::new(&mut pio.common);
@@ -149,6 +172,7 @@ async fn main(spawner: Spawner) -> ! {
     let usb = builder.build();
 
     let globals = GLOBALS.init([0u16; 10]);
+    let program_buffer = PROGRAM_BUFFER.init([0u16; PROGRAM_BUFFER_SIZE]);
     let storage = {
         use pliot::StorageError;
 
@@ -160,6 +184,11 @@ async fn main(spawner: Spawner) -> ! {
                 panic!("flash storage init failed");
             }
         };
+        if clear_program {
+            if storage.format().is_err() {
+                panic!("flash storage watchdog reset format failed");
+            }
+        }
         match storage.load_header() {
             Ok(()) => {}
             Err(StorageError::InvalidHeader) => {
@@ -177,20 +206,9 @@ async fn main(spawner: Spawner) -> ! {
                 panic!("flash storage header load failed");
             }
         }
-        if storage.is_empty() {
-            let program_buffer = PROGRAM_BUFFER.init([0u16; PROGRAM_BUFFER_SIZE]);
-            let program_len = match default_program(program_buffer) {
-                Ok(length) => length,
-                Err(_) => {
-                    panic!("default program build failed");
-                }
-            };
-            let Some(program) = program_buffer.get(..program_len) else {
-                panic!("default program bounds invalid");
-            };
-            if storage.write_program(program).is_err() {
-                panic!("default program flash write failed");
-            }
+
+        if clear_program || storage.is_empty() {
+            write_default_program(&mut storage, program_buffer);
         }
         FLASH_STORAGE.init(storage)
     };
@@ -212,6 +230,7 @@ async fn main(spawner: Spawner) -> ! {
     let _ = spawner.spawn(usb_device_task(usb));
     let _ = spawner.spawn(io_task(usb_receiver, usb_sender, shared));
     let _ = spawner.spawn(heartbeat_task(onboard_blue));
+    let _ = spawner.spawn(watchdog_task(watchdog));
    
     led_loop_pio::<
         _,
@@ -279,6 +298,24 @@ async fn io_task(
         >(&mut receiver, &mut sender, shared, usb_buf, frame)
         .await;
         USB_CONNECTED.store(false, Ordering::Relaxed);
+    }
+}
+
+fn write_default_program(
+    storage: &mut StorageImpl,
+    program_buffer: &mut [u16; PROGRAM_BUFFER_SIZE],
+) {
+    let program_len = match default_program(program_buffer) {
+        Ok(length) => length,
+        Err(_) => {
+            panic!("default program build failed");
+        }
+    };
+    let Some(program) = program_buffer.get(..program_len) else {
+        panic!("default program bounds invalid");
+    };
+    if storage.write_program(program).is_err() {
+        panic!("default program flash write failed");
     }
 }
 
@@ -389,6 +426,16 @@ async fn heartbeat_task(mut led: Output<'static>) {
         Timer::after_millis(40).await;
         led.set_high();
         Timer::after_millis(960).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn watchdog_task(mut watchdog: Watchdog) {
+    watchdog.pause_on_debug(true);
+    watchdog.start(Duration::from_millis(WATCHDOG_PERIOD_MS));
+    loop {
+        Timer::after_millis(WATCHDOG_FEED_MS).await;
+        watchdog.feed();
     }
 }
 
