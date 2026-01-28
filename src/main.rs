@@ -377,6 +377,7 @@ async fn led_loop_pio<
                 if !seed_stack(stack, red, green, blue) {
                     continue;
                 }
+                let tick = Instant::now().as_millis() as u16;
                 for machine_number in 0..machine_count {
                     match pliot.get_led_color(machine_number, i as u16, tick, stack) {
                         Ok((next_red, next_green, next_blue)) => {
@@ -417,7 +418,6 @@ async fn led_loop_pio<
         };
 
         Timer::after(wait_duration).await;
-        tick = tick.wrapping_add(1);
     }
 }
 
