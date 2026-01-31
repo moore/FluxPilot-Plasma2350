@@ -56,8 +56,8 @@ bind_interrupts!(struct Irqs {
 
 const MAX_ARGS: usize = 3;
 const MAX_RESULT: usize = 3;
-const PROGRAM_BLOCK_SIZE: usize = 100;
-const INCOMING_MESSAGE_CAP: usize = 128;
+const PROGRAM_BLOCK_SIZE: usize = 64;
+const INCOMING_MESSAGE_CAP: usize = 2048;
 const OUTGOING_MESSAGE_CAP: usize = 128;
 const NUM_LEDS: usize = 1024;
 const FRAME_TARGET_MS: u64 = 16;
@@ -67,7 +67,7 @@ const STACK_SIZE: usize = 100;
 const WATCHDOG_RESET_THRESHOLD: u32 = 3;
 const WATCHDOG_PERIOD_MS: u64 = 2_000;
 const WATCHDOG_FEED_MS: u64 = 500;
-const GLOBALS_SIZE: usize = 256;
+const GLOBALS_SIZE: usize = 2048;
 const WATCHDOG_SCRATCH_MAGIC: u32 = u32::from_le_bytes(*b"WDT0");
 
 type FlashDriver = flash::Flash<'static, peripherals::FLASH, flash::Blocking, FLASH_SIZE>;
