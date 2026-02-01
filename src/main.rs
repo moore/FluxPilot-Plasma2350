@@ -57,8 +57,9 @@ bind_interrupts!(struct Irqs {
 const MAX_ARGS: usize = 3;
 const MAX_RESULT: usize = 3;
 const PROGRAM_BLOCK_SIZE: usize = 64;
+const UI_BLOCK_SIZE: usize = 128;
 const INCOMING_MESSAGE_CAP: usize = 2048;
-const OUTGOING_MESSAGE_CAP: usize = 128;
+const OUTGOING_MESSAGE_CAP: usize = 1048;
 const NUM_LEDS: usize = 1024;
 const FRAME_TARGET_MS: u64 = 16;
 const PROGRAM_BUFFER_SIZE: usize = 1024;
@@ -79,6 +80,7 @@ type SharedState = PliotShared<
     MAX_ARGS,
     MAX_RESULT,
     PROGRAM_BLOCK_SIZE,
+    UI_BLOCK_SIZE,
     STACK_SIZE,
 >;
 
@@ -185,7 +187,7 @@ async fn main(spawner: Spawner) -> ! {
         }
         match storage.load_header() {
             Ok(()) => {}
-            Err(StorageError::InvalidHeader) => {
+            Err(StorageError::InvalidHeader { location: _ }) => {
                 if storage.probe_write_read().is_err() {
                     panic!("flash storage probe failed");
                 }
@@ -234,6 +236,7 @@ async fn main(spawner: Spawner) -> ! {
         MAX_ARGS,
         MAX_RESULT,
         PROGRAM_BLOCK_SIZE,
+        UI_BLOCK_SIZE,
         STACK_SIZE,
         FRAME_TARGET_MS,
     >(&mut led_driver, data, shared)
@@ -293,6 +296,7 @@ async fn io_task(
             MAX_ARGS,
             MAX_RESULT,
             PROGRAM_BLOCK_SIZE,
+            UI_BLOCK_SIZE,
             STACK_SIZE,
             USB_RECEIVE_BUF_SIZE,
             INCOMING_MESSAGE_CAP,
@@ -329,6 +333,7 @@ async fn led_loop_pio<
     const MAX_ARGS: usize,
     const MAX_RESULT: usize,
     const PROGRAM_BLOCK_SIZE: usize,
+    const UI_BLOCK_SIZE: usize,
     const STACK_SIZE: usize,
     const FRAME_TARGET_MS: u64,
 >(
@@ -336,13 +341,13 @@ async fn led_loop_pio<
     data: &mut [RGB8; NUM_LEDS],
     shared: &'static Mutex<
         CriticalSectionRawMutex,
-        PliotShared<'static, 'static, S, MAX_ARGS, MAX_RESULT, PROGRAM_BLOCK_SIZE, STACK_SIZE>,
+        PliotShared<'static, 'static, S, MAX_ARGS, MAX_RESULT, PROGRAM_BLOCK_SIZE, UI_BLOCK_SIZE, STACK_SIZE>,
     >,
 ) -> ! where
     P: embassy_rp::pio::Instance,
     S: pliot::Storage,
 {
-    let mut tick = 0u16;
+    let tick: u16 = 0u16;
     loop {
         let start_time = Instant::now();
         {
